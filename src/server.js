@@ -11,7 +11,6 @@ const SOURCE_API = "https://sicbosun-100.onrender.com/api";
 
 let history = [];
 let lastPhien = null;
-let maxPatternLength = 20; // Pattern dài hạn tối đa
 
 // Lưu data.json
 function saveData() {
@@ -31,17 +30,14 @@ async function fetchWithRetry(url, retries = 3) {
   }
 }
 
-// Tạo độ tin cậy ngẫu nhiên hợp lý
+// Tạo độ tin cậy hợp lý
 function randomConfidence(min = 60, max = 90) {
   return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Thuật toán nâng cao với ensemble + trọng số
+// Thuật toán nâng cao: dựa trên **5 phiên gần nhất**
 function advancedPredict(history) {
-  const last = history[history.length - 1] || null;
-  const last5 = history.slice(-5);
-  const lastPattern = history.slice(-maxPatternLength);
-
+  const last5 = history.slice(-5); // 5 phiên gần nhất
   let scoreTai = 0;
   let scoreXiu = 0;
 
@@ -55,28 +51,30 @@ function advancedPredict(history) {
   }
 
   // 2. Cầu đảo (weight 0.2)
-  if (last) {
-    if (last.Ket_qua === "Tài") scoreXiu += 0.2;
+  if (last5.length >= 1) {
+    const lastPhien = last5[last5.length - 1];
+    if (lastPhien.Ket_qua === "Tài") scoreXiu += 0.2;
     else scoreTai += 0.2;
   }
 
   // 3. Tổng xúc xắc (weight 0.3)
-  if (last) {
-    if (last.Tong >= 11) scoreTai += 0.3;
+  if (last5.length >= 1) {
+    const lastPhien = last5[last5.length - 1];
+    if (lastPhien.Tong >= 11) scoreTai += 0.3;
     else scoreXiu += 0.3;
   }
 
-  // 4. Pattern dài hạn (weight 0.2)
-  const totalTai = lastPattern.filter(h => h.Ket_qua === "Tài").length;
-  const totalXiu = lastPattern.filter(h => h.Ket_qua === "Xỉu").length;
-  const total = lastPattern.length || 1;
+  // 4. Pattern dài hạn 5 phiên (weight 0.2)
+  const totalTai = last5.filter(h => h.Ket_qua === "Tài").length;
+  const totalXiu = last5.filter(h => h.Ket_qua === "Xỉu").length;
+  const total = last5.length || 1;
 
   if (totalTai / total > 0.6) scoreTai += 0.2;
   if (totalXiu / total > 0.6) scoreXiu += 0.2;
 
-  // Nếu dự đoán sai nhiều (>5 phiên), reset pattern
-  const last5Wrong = history.slice(-5).filter(h => h.Du_doan !== h.Ket_qua).length;
-  if (last5Wrong >= 5) {
+  // Nếu 5 phiên gần nhất sai hết, reset cân bằng
+  const wrong5 = last5.filter(h => h.Du_doan && h.Du_doan !== h.Ket_qua).length;
+  if (wrong5 >= 5) {
     scoreTai = 0.5;
     scoreXiu = 0.5;
   }
@@ -96,8 +94,10 @@ app.get("/api", async (req, res) => {
   try {
     const data = await fetchWithRetry(SOURCE_API);
 
+    // Nếu phiên mới, thêm dự đoán
     if (data.Phien !== lastPhien) {
       lastPhien = data.Phien;
+
       const { duDoan, doTinCay } = advancedPredict(history);
 
       const newEntry = {
@@ -119,7 +119,6 @@ app.get("/api", async (req, res) => {
     const tiLeChinhXac = history.length > 0 ? ((soDung / history.length) * 100).toFixed(1) + "%" : "0%";
 
     const output = {
-      Dev: "@minhsangdangcap",
       Phien: history.map(h => ({
         Phien: h.Phien,
         Xuc_xac: h.Xuc_xac,
@@ -133,6 +132,7 @@ app.get("/api", async (req, res) => {
       So_dung: soDung,
       So_sai: soSai,
       Ti_le_chinh_xac: tiLeChinhXac,
+      Dev: "@minhsangdangcap"
     };
 
     res.json(output);
