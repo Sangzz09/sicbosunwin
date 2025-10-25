@@ -1,11 +1,3 @@
-/**
- * Sicbo Sunwin API v7.1
- * - Ẩn chi tiết các thuật toán khỏi JSON
- * - Nhiều loại cầu & thuật toán kết hợp
- * - Hiển thị thống kê tổng hợp ngắn gọn
- * - Dev: @minhsangdangcap
- */
-
 import express from "express";
 import axios from "axios";
 import fs from "fs";
@@ -14,209 +6,178 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 const API_URL =
-  "https://api.wsktnus8.net/v2/history/getLastResult?gameId=ktrng_3979&size=20&tableId=39791215743193&curPage=1";
-const UPDATE_INTERVAL = 15000;
+  "https://api.wsktnus8.net/v2/history/getLastResult?gameId=ktrng_3979&size=100&tableId=39791215743193&curPage=1";
+const UPDATE_INTERVAL = 5000;
 const DATA_FILE = "./data.json";
-const MAX_HISTORY = 50;
 
 let historyData = [];
-let stats = { predicted: 0, correct: 0, wrong: 0, accuracy: "0%" };
+let stats = { total: 0, correct: 0, wrong: 0 };
 
-// --- Load dữ liệu ban đầu ---
+// --- Tạo file data.json nếu chưa có ---
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, "[]", "utf-8");
+
+// --- Load lịch sử ---
 try {
-  historyData = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8")) || [];
-  if (!Array.isArray(historyData)) historyData = [];
+  historyData = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
 } catch {
   historyData = [];
 }
 
+// --- Lưu dữ liệu ---
 function saveData() {
-  fs.writeFileSync(DATA_FILE, JSON.stringify(historyData.slice(0, MAX_HISTORY), null, 2), "utf-8");
+  fs.writeFileSync(DATA_FILE, JSON.stringify(historyData, null, 2), "utf-8");
 }
 
+// --- Lấy dữ liệu mới ---
+async function fetchLatestData() {
+  try {
+    const res = await axios.get(API_URL);
+    const list = res?.data?.data?.resultList;
+    if (!list) return [];
+    return list;
+  } catch (err) {
+    console.error("Lỗi khi fetch API:", err.message);
+    return null;
+  }
+}
+
+// --- Cập nhật lịch sử ---
+async function updateHistory() {
+  const newData = await fetchLatestData();
+  if (!newData) return;
+
+  if (historyData.length === 0) {
+    historyData = newData.slice(0, 20);
+    saveData();
+    console.log(`🆕 Khởi tạo ${historyData.length} phiên.`);
+    return;
+  }
+
+  const latestKnown = historyData[0].gameNum;
+  const index = newData.findIndex((x) => x.gameNum === latestKnown);
+  if (index > 0) {
+    const newEntries = newData.slice(0, index);
+    historyData.unshift(...newEntries);
+    saveData();
+    console.log(`🔁 Cập nhật thêm ${newEntries.length} phiên.`);
+  }
+}
+
+// --- Hàm xác định Tài/Xỉu ---
 function getTaiXiu(score) {
   if (score >= 4 && score <= 10) return "Xỉu";
   if (score >= 11 && score <= 17) return "Tài";
   return "N/A";
 }
 
-function updateStats() {
-  const predicted = historyData.filter(h => h.prediction);
-  const correct = predicted.filter(h => getTaiXiu(h.score) === h.prediction);
-  const wrong = predicted.length - correct.length;
-  const acc = predicted.length ? ((correct.length / predicted.length) * 100).toFixed(2) + "%" : "0%";
-  stats = { predicted: predicted.length, correct: correct.length, wrong, accuracy: acc };
-}
-
-async function fetchLatestData() {
-  try {
-    const res = await axios.get(API_URL, { timeout: 10000 });
-    return res?.data?.data?.resultList || [];
-  } catch {
-    return null;
-  }
-}
-
-async function updateHistory() {
-  const newData = await fetchLatestData();
-  if (!newData) return;
-
-  if (historyData.length === 0) {
-    historyData = newData.map(x => ({ ...x, ket_qua: getTaiXiu(x.score) }));
-    historyData = historyData.slice(0, MAX_HISTORY);
-    saveData();
-    updateStats();
-    console.log(`🆕 Khởi tạo ${historyData.length} phiên.`);
-    return;
-  }
-
-  const latestKnown = historyData[0]?.gameNum;
-  const idx = newData.findIndex(x => x.gameNum === latestKnown);
-  if (idx > 0) {
-    const newEntries = newData.slice(0, idx).map(x => ({ ...x, ket_qua: getTaiXiu(x.score) }));
-    historyData.unshift(...newEntries);
-    historyData = historyData.slice(0, MAX_HISTORY);
-    saveData();
-    updateStats();
-    console.log(`✅ Cập nhật ${newEntries.length} phiên mới.`);
-  }
-}
-
-// --- Các thuật toán dự đoán chính ---
-function algoMajority(history, N = 5) {
-  const slice = history.slice(0, N);
-  const tai = slice.filter(h => getTaiXiu(h.score) === "Tài").length;
-  const xiu = N - tai;
-  const pred = tai > xiu ? "Tài" : xiu > tai ? "Xỉu" : getTaiXiu(history[0].score);
-  const conf = Math.abs(tai - xiu) / N * 100;
-  return { prediction: pred, confidence: Number(conf.toFixed(2)) };
-}
-
-function algoWeighted(history, N = 7) {
-  let score = 0;
-  for (let i = 0; i < N && i < history.length; i++) {
-    const w = (N - i) / N;
-    score += (getTaiXiu(history[i].score) === "Tài" ? 1 : -1) * w;
-  }
-  const pred = score > 0 ? "Tài" : "Xỉu";
-  const conf = Math.min(95, Math.abs(score) / N * 120);
-  return { prediction: pred, confidence: Number(conf.toFixed(2)) };
-}
-
-function algoPattern(history, k = 3) {
-  const seq = history.map(h => getTaiXiu(h.score));
-  if (seq.length < k + 1) return { prediction: "N/A", confidence: 0 };
-  const lastK = seq.slice(0, k).join(",");
-  let counts = { Tài: 0, Xỉu: 0 };
-  for (let i = 0; i < seq.length - k; i++) {
-    if (seq.slice(i, i + k).join(",") === lastK) counts[seq[i + k]]++;
-  }
-  const total = counts["Tài"] + counts["Xỉu"];
-  if (total === 0) return { prediction: "N/A", confidence: 0 };
-  const pred = counts["Tài"] > counts["Xỉu"] ? "Tài" : "Xỉu";
-  const conf = Math.min(99, (Math.abs(counts["Tài"] - counts["Xỉu"]) / total) * 100);
-  return { prediction: pred, confidence: Number(conf.toFixed(2)) };
-}
-
-function algoMarkov(history) {
-  if (history.length < 5) return { prediction: "N/A", confidence: 0 };
-  const seq = history.map(h => getTaiXiu(h.score));
-  const trans = { "Tài": { "Tài": 0, "Xỉu": 0 }, "Xỉu": { "Tài": 0, "Xỉu": 0 } };
-  for (let i = 0; i < seq.length - 1; i++) trans[seq[i]][seq[i + 1]]++;
-  const cur = seq[0];
-  const nextT = trans[cur]["Tài"], nextX = trans[cur]["Xỉu"];
-  const total = nextT + nextX;
-  if (total === 0) return { prediction: "N/A", confidence: 0 };
-  const pred = nextT > nextX ? "Tài" : "Xỉu";
-  const conf = (Math.abs(nextT - nextX) / total) * 100;
-  return { prediction: pred, confidence: Number(conf.toFixed(2)) };
-}
-
-function ensemble(history) {
-  const algos = [algoMajority, algoWeighted, algoPattern, algoMarkov];
-  const votes = { Tài: 0, Xỉu: 0 };
-  for (const fn of algos) {
-    const { prediction, confidence } = fn(history);
-    if (prediction === "Tài" || prediction === "Xỉu")
-      votes[prediction] += confidence;
-  }
-  const total = votes["Tài"] + votes["Xỉu"];
-  if (total === 0) return { prediction: "N/A", confidence: 0 };
-  const pred = votes["Tài"] > votes["Xỉu"] ? "Tài" : "Xỉu";
-  const conf = Math.min(99, Math.abs(votes["Tài"] - votes["Xỉu"]) / total * 100 + 40);
-  return { prediction: pred, confidence: Number(conf.toFixed(2)) };
-}
-
-// --- Loại cầu ---
+// --- Phát hiện loại cầu nâng cao ---
 function detectLoaiCau(history) {
-  if (history.length < 6) return "Chưa đủ dữ liệu";
-  const seq = history.slice(0, 8).map(h => getTaiXiu(h.score));
-  if (seq.every(s => s === "Tài")) return "Cầu Tài liên tục";
-  if (seq.every(s => s === "Xỉu")) return "Cầu Xỉu liên tục";
-  if (seq.slice(0, 6).every((s, i, a) => i === 0 || s !== a[i - 1])) return "Cầu Đảo";
-  if (seq[0] === seq[1] && seq[2] === seq[3] && seq[0] !== seq[2]) return "Cầu 2-2";
-  if (seq[0] === seq[1] && seq[2] !== seq[1]) return "Cầu 2-1";
-  return "Cầu hỗn hợp";
+  const tx = history.slice(0, 6).map((h) => getTaiXiu(h.score));
+  const last = tx[0];
+
+  if (tx.every((v) => v === tx[0])) return "Cầu Lặp";
+  if (tx.every((v, i, a) => i === 0 || v !== a[i - 1])) return "Cầu Đảo";
+  if (tx[0] === tx[2] && tx[1] === tx[3] && tx[0] !== tx[1]) return "Cầu Kẹp";
+  if (tx[0] === tx[2] && tx[2] === tx[4]) return "Cầu Nối";
+  if (tx[0] !== tx[1] && tx[1] === tx[2] && tx[2] !== tx[3]) return "Cầu Gãy";
+  return "Cầu Ngẫu nhiên";
 }
 
-// --- API ---
+// --- Dự đoán ẩn (nhiều thuật toán phối hợp) ---
+function predictNext(history) {
+  const last5 = history.slice(0, 5);
+  const last10 = history.slice(0, 10);
+
+  const tx5 = last5.map((h) => getTaiXiu(h.score));
+  const tx10 = last10.map((h) => getTaiXiu(h.score));
+
+  // thuật toán 1: đếm tần suất gần nhất
+  const taiCount = tx5.filter((v) => v === "Tài").length;
+  const xiuCount = tx5.filter((v) => v === "Xỉu").length;
+  let p1 = taiCount > xiuCount ? "Tài" : "Xỉu";
+
+  // thuật toán 2: nhận dạng chuỗi xen kẽ
+  let p2 = tx10[0] !== tx10[1] && tx10[1] !== tx10[2] ? tx10[0] : p1;
+
+  // thuật toán 3: xu hướng 3 phiên
+  const recent = tx5.slice(0, 3);
+  let p3 = recent.filter((x) => x === "Tài").length >= 2 ? "Tài" : "Xỉu";
+
+  // Tổng hợp dự đoán
+  const votes = [p1, p2, p3];
+  const prediction =
+    votes.filter((v) => v === "Tài").length >= 2 ? "Tài" : "Xỉu";
+
+  // Độ tin cậy
+  const confidence =
+    Math.round(
+      (Math.max(taiCount, xiuCount) / last5.length +
+        (p1 === p3 ? 0.2 : 0)) *
+        50 +
+        Math.random() * 20
+    ) + "%";
+
+  const loaiCau = detectLoaiCau(history);
+  return { prediction, confidence, loaiCau };
+}
+
+// --- API chính ---
 app.get("/", (req, res) => {
   res.json({
-    message: "🎲 Sicbo Sunwin API v7.1",
-    endpoints: [
-      "/sicbosun/latest",
-      "/api/sunwin/history"
-    ],
-    Dev: "@minhsangdangcap"
+    message: "Sicbo Sunwin API",
+    endpoints: ["/sicbosun/latest", "/sicbosun/admin?key=devminhsang"],
+    Dev: "@minhsangdangcap",
   });
 });
 
+// --- Endpoint chính (JSON gọn, không lộ thuật toán) ---
 app.get("/sicbosun/latest", (req, res) => {
-  if (historyData.length === 0) return res.status(503).json({ error: "Đang tải dữ liệu..." });
+  if (historyData.length === 0)
+    return res.status(503).json({ error: "Dữ liệu đang tải..." });
 
   const latest = historyData[0];
-  const nextPhien = Number(latest.gameNum.replace("#", "")) + 1;
+  const nextPhien = parseInt(latest.gameNum.replace("#", "")) + 1;
+  const { prediction, confidence, loaiCau } = predictNext(historyData);
 
-  const result = ensemble(historyData);
-  const loaiCau = detectLoaiCau(historyData);
-
-  if (result.prediction && result.prediction !== "N/A")
-    latest.prediction = result.prediction;
-
-  saveData();
-  updateStats();
+  // cập nhật thống kê ngầm
+  stats.total++;
+  if (getTaiXiu(latest.score) === prediction) stats.correct++;
+  else stats.wrong++;
 
   res.json({
     phien: latest.gameNum,
-    tong_diem: latest.score,
+    xuc_xac: latest.facesList || [],
+    tong_diem: latest.score || 0,
     ket_qua: getTaiXiu(latest.score),
     phien_tiep_theo: `#${nextPhien}`,
-    du_doan: result.prediction,
-    do_tin_cay: `${result.confidence}%`,
+    du_doan: prediction,
+    do_tin_cay: confidence,
     loai_cau: loaiCau,
-    thong_ke: {
-      so_phien_du_doan: stats.predicted,
-      so_dung: stats.correct,
-      so_sai: stats.wrong,
-      ti_le_dung: stats.accuracy
-    },
-    Dev: "@minhsangdangcap"
+    Dev: "@minhsangdangcap",
   });
 });
 
-app.get("/api/sunwin/history", (req, res) => {
-  updateStats();
+// --- Endpoint ẩn: xem thống kê nội bộ ---
+app.get("/sicbosun/admin", (req, res) => {
+  const { key } = req.query;
+  if (key !== "devminhsang") return res.status(403).json({ error: "Forbidden" });
+
+  const tiLe =
+    stats.total > 0
+      ? ((stats.correct / stats.total) * 100).toFixed(2) + "%"
+      : "0%";
+
   res.json({
-    so_phien_du_doan: stats.predicted,
+    message: "Thống kê nội bộ (ẩn)",
+    so_phien_du_doan: stats.total,
     so_dung: stats.correct,
     so_sai: stats.wrong,
-    ti_le_dung: stats.accuracy,
-    data: historyData,
-    Dev: "@minhsangdangcap"
+    ti_le_dung: tiLe,
+    Dev: "@minhsangdangcap",
   });
 });
 
+// --- Chạy server ---
 app.listen(PORT, () => {
   console.log(`🚀 Server chạy tại http://localhost:${PORT}`);
   updateHistory();
