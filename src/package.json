@@ -1,5 +1,5 @@
 {
-  "name": "sicbo-api-5phien",
+  "name": "sicbo-api-vip",
   "version": "1.0.0",
   "main": "server.js",
   "type": "module",
@@ -7,7 +7,7 @@
     "start": "node server.js"
   },
   "dependencies": {
-    "express": "^4.19.0",
+    "express": "^4.18.2",
     "node-fetch": "^3.3.2",
     "cors": "^2.8.5"
   }
