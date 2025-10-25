@@ -1,12 +1,11 @@
 // =====================================================
-// SICBO SUNWIN PREDICTOR v7.0
+// SICBO SUNWIN PREDICTOR v7.1
 // Dev: @minhsangdangcap
-// Nâng cấp bởi GPT-5 (2025-10)
 // =====================================================
 
-const express = require("express");
-const axios = require("axios");
-const fs = require("fs");
+import express from "express";
+import axios from "axios";
+import fs from "fs";
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -19,9 +18,9 @@ const UPDATE_INTERVAL = 5000;
 let historyData = [];
 let soDung = 0;
 let soSai = 0;
-let heSoTinCay = 1.0; // hệ số tự điều chỉnh độ tin cậy
+let heSoTinCay = 1.0;
 
-// =================== KHỞI TẠO FILE ===================
+// --- Tạo file lưu ---
 if (!fs.existsSync(DATA_FILE)) fs.writeFileSync(DATA_FILE, "[]", "utf-8");
 try {
   historyData = JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"));
@@ -29,12 +28,11 @@ try {
   historyData = [];
 }
 
-// =================== HÀM LƯU FILE ===================
 function saveData() {
   fs.writeFileSync(DATA_FILE, JSON.stringify(historyData, null, 2), "utf-8");
 }
 
-// =================== GỌI API ===================
+// --- Lấy dữ liệu ---
 async function fetchLatest() {
   try {
     const res = await axios.get(API_URL);
@@ -45,7 +43,7 @@ async function fetchLatest() {
   }
 }
 
-// =================== CẬP NHẬT LỊCH SỬ ===================
+// --- Cập nhật lịch sử ---
 async function updateHistory() {
   const newData = await fetchLatest();
   if (!newData.length) return;
@@ -67,31 +65,23 @@ async function updateHistory() {
   }
 }
 
-// =================== XỬ LÝ KẾT QUẢ ===================
+// --- Xử lý kết quả ---
 function getTaiXiu(score) {
   if (score >= 4 && score <= 10) return "Xỉu";
   if (score >= 11 && score <= 17) return "Tài";
   return "N/A";
 }
 
-// =================== DỰ ĐOÁN THÔNG MINH ===================
+// --- Dự đoán ---
 function duDoanThongMinh(history) {
   const last5 = history.slice(0, 5);
   const last10 = history.slice(0, 10);
+  const count = (arr, type) => arr.filter((x) => getTaiXiu(x.score) === type).length;
 
-  const count = (arr, type) =>
-    arr.filter((x) => getTaiXiu(x.score) === type).length;
+  const tai5 = count(last5, "Tài"), xiu5 = count(last5, "Xỉu");
+  const tai10 = count(last10, "Tài"), xiu10 = count(last10, "Xỉu");
 
-  const tai5 = count(last5, "Tài");
-  const xiu5 = count(last5, "Xỉu");
-  const tai10 = count(last10, "Tài");
-  const xiu10 = count(last10, "Xỉu");
-
-  // --- Nhiều hệ thống trọng số (ẩn khỏi JSON)
-  const w1 = 0.6 * heSoTinCay; // trọng số ngắn hạn
-  const w2 = 0.3; // dài hạn
-  const w3 = 0.1; // mô hình mẫu
-
+  const w1 = 0.6 * heSoTinCay, w2 = 0.3, w3 = 0.1;
   const taiScore = tai5 * w1 + tai10 * w2 + (tai10 - xiu10) * w3;
   const xiuScore = xiu5 * w1 + xiu10 * w2 + (xiu10 - tai10) * w3;
 
@@ -101,35 +91,27 @@ function duDoanThongMinh(history) {
     99.9
   ).toFixed(1);
 
-  // --- Dự đoán vị (ẩn khỏi JSON)
-  const tong = history.slice(0, 10).map((x) => x.score);
-  const Vi = [...new Set(tong)].sort((a, b) => b - a).slice(0, 3);
-
-  // --- Loại cầu (ẩn khỏi JSON)
   let loaiCau = "Bình thường";
   const last3 = history.slice(0, 3);
   if (last3.every((x) => getTaiXiu(x.score) === getTaiXiu(last3[0].score)))
     loaiCau = "Cầu liền mạch";
   if (
-    last3.every(
-      (x, i, a) => i === 0 || getTaiXiu(x.score) !== getTaiXiu(a[i - 1].score)
-    )
+    last3.every((x, i, a) => i === 0 || getTaiXiu(x.score) !== getTaiXiu(a[i - 1].score))
   )
     loaiCau = "Cầu đảo";
   if (tai5 >= 4 || xiu5 >= 4) loaiCau = "Cầu lệch mạnh";
   if (tai10 === 5 && xiu10 === 5) loaiCau = "Cầu cân bằng";
 
-  // --- Chuỗi thắng liên tục
   let chuoiThang = 0;
   for (let i = 0; i < history.length - 1; i++) {
     if (getTaiXiu(history[i].score) === duDoan) chuoiThang++;
     else break;
   }
 
-  return { duDoan, doTinCay, Vi, loaiCau, chuoiThang };
+  return { duDoan, doTinCay, loaiCau, chuoiThang };
 }
 
-// =================== RESET HỆ DỰ ĐOÁN ===================
+// --- Reset hệ dự đoán ---
 function capNhatThongKe(prediction, ketQua) {
   if (prediction === ketQua) {
     soDung++;
@@ -152,16 +134,15 @@ function capNhatThongKe(prediction, ketQua) {
   return { soDung, soSai, tiLe: tiLe.toFixed(1) + "%" };
 }
 
-// =================== API ===================
+// --- API ---
 app.get("/", (req, res) => {
   res.json({
-    "Thông báo": "API Sicbo Sunwin Predictor v7.0 đang hoạt động!",
+    "Thông báo": "API Sicbo Sunwin Predictor v7.1 đang hoạt động!",
     "Các endpoint khả dụng": ["/sicbosun/latest", "/sicbosun/history"],
     Dev: "@minhsangdangcap",
   });
 });
 
-// --- API chính ---
 app.get("/sicbosun/latest", (req, res) => {
   if (historyData.length === 0)
     return res.status(503).json({ lỗi: "Chưa có dữ liệu." });
@@ -191,7 +172,6 @@ app.get("/sicbosun/latest", (req, res) => {
   });
 });
 
-// --- Lịch sử gần nhất ---
 app.get("/sicbosun/history", (req, res) => {
   res.json({
     "Tổng số phiên lưu": historyData.length,
@@ -200,9 +180,9 @@ app.get("/sicbosun/history", (req, res) => {
   });
 });
 
-// =================== CHẠY SERVER ===================
 app.listen(PORT, () => {
   console.log(`🚀 Server chạy tại: http://localhost:${PORT}/sicbosun/latest`);
   updateHistory();
   setInterval(updateHistory, UPDATE_INTERVAL);
 });
+
