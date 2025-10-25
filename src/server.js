@@ -7,12 +7,10 @@ const app = express();
 app.use(cors());
 
 const PORT = process.env.PORT || 3000;
-const SOURCE_API = "https://sicbosun-100.onrender.com/api";
+const SOURCE_API = "https://sicsunnehahahaha.onrender.com/predict";
 
 let history = [];
 let lastPhien = null;
-const MAX_PATTERN = 20;
-const RESET_THRESHOLD = 5;
 
 // Load data.json nếu có
 if (fs.existsSync("data.json")) {
@@ -24,10 +22,12 @@ if (fs.existsSync("data.json")) {
   }
 }
 
+// Lưu lịch sử
 function saveData() {
   fs.writeFileSync("data.json", JSON.stringify(history, null, 2));
 }
 
+// Fetch API với retry
 async function fetchWithRetry(url, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -49,16 +49,15 @@ function detectCau(history) {
   return "Sunwin";
 }
 
-// Dự đoán Vi VIP dựa trên lịch sử 10–20 phiên
-function predictViVIP(history, duDoan) {
+// Dự đoán Vi tự động dựa trên tổng gần nhất
+function predictVi(history, duDoan) {
   const lastTotals = history.slice(-20).map(h => h.Tong);
   const freq = {};
   lastTotals.forEach(t => freq[t] = (freq[t] || 0) + 1);
 
-  // Sắp xếp theo tần suất xuất hiện
   let sortedTotals = Object.keys(freq).map(Number).sort((a,b) => freq[b]-freq[a]);
 
-  // Nếu không đủ, thêm giá trị ngẫu nhiên trong khoảng Tài/Xỉu
+  // Nếu chưa đủ 3 giá trị, thêm ngẫu nhiên theo Tài/Xỉu
   while (sortedTotals.length < 3) {
     const val = duDoan === "Tài"
       ? Math.floor(Math.random()*(18-11+1))+11
@@ -66,16 +65,13 @@ function predictViVIP(history, duDoan) {
     if (!sortedTotals.includes(val)) sortedTotals.push(val);
   }
 
-  // Lấy 3 giá trị dự đoán Vi gần nhất
   return sortedTotals.slice(0,3);
 }
 
-// Thuật toán dự đoán nâng cao VIP
-function advancedPredictVIP(history) {
-  const lastPattern = history.slice(-MAX_PATTERN);
+// Thuật toán dự đoán Tài/Xỉu VIP
+function advancedPredict(history) {
   const last5 = history.slice(-5);
-  let scoreTai = 0;
-  let scoreXiu = 0;
+  let scoreTai = 0, scoreXiu = 0;
 
   if (last5.length >= 3) {
     const last3 = last5.slice(-3);
@@ -89,21 +85,18 @@ function advancedPredictVIP(history) {
     const lastPhien = last5[last5.length - 1];
     if (lastPhien.Ket_qua === "Tài") scoreXiu += 0.2;
     else scoreTai += 0.2;
-  }
-
-  if (last5.length >= 1) {
-    const lastPhien = last5[last5.length - 1];
     if (lastPhien.Tong >= 11) scoreTai += 0.3;
     else scoreXiu += 0.3;
   }
 
-  const totalTai = lastPattern.filter(h => h.Ket_qua === "Tài").length;
-  const totalXiu = lastPattern.filter(h => h.Ket_qua === "Xỉu").length;
-  const total = lastPattern.length || 1;
+  const totalTai = last5.filter(h => h.Ket_qua === "Tài").length;
+  const totalXiu = last5.filter(h => h.Ket_qua === "Xỉu").length;
+  const total = last5.length || 1;
   if (totalTai / total > 0.6) scoreTai += 0.2;
   if (totalXiu / total > 0.6) scoreXiu += 0.2;
 
   const lastWrong = last5.filter(h => h.Du_doan && h.Du_doan !== h.Ket_qua).length;
+  const RESET_THRESHOLD = 5;
   if (lastWrong >= RESET_THRESHOLD) {
     scoreTai = 0.5;
     scoreXiu = 0.5;
@@ -114,11 +107,12 @@ function advancedPredictVIP(history) {
   const probXiu = (scoreXiu / totalScore) * 100;
 
   const duDoan = probTai > probXiu ? "Tài" : "Xỉu";
-  const doTinCay = Math.max(probTai, probXiu).toFixed(0);
-  const loaiCau = detectCau(history);
-  const Vi = predictViVIP(history, duDoan);
+  const doTinCay = Math.max(probTai, probXiu).toFixed(2);
 
-  return { duDoan, doTinCay, loaiCau, Vi };
+  const Vi = predictVi(history, duDoan);
+  const loaiCau = detectCau(history);
+
+  return { duDoan, doTinCay, Vi, loaiCau };
 }
 
 // API chính
@@ -126,18 +120,24 @@ app.get("/api", async (req, res) => {
   try {
     const data = await fetchWithRetry(SOURCE_API);
 
-    if (data.Phien !== lastPhien) {
-      lastPhien = data.Phien;
-      const { duDoan, doTinCay, loaiCau, Vi } = advancedPredictVIP(history);
+    const Phien = Number(data["🎯 Phiên Dự Đoán"]);
+    const Xuc_xac = data["🎲 Xúc Xắc"].split(" - ").map(Number);
+    const Tong = Number(data["📈 Tổng Điểm"]);
+    const Ket_qua = data["📊 Kết Quả"];
+
+    // Chỉ thêm phiên mới
+    if (Phien !== lastPhien) {
+      lastPhien = Phien;
+      const { duDoan, doTinCay, Vi, loaiCau } = advancedPredict(history);
 
       const newEntry = {
-        Phien: data.Phien,
-        Xuc_xac: data.Xuc_xac,
-        Tong: data.Tong,
-        Ket_qua: data.Ket_qua,
+        Phien,
+        Xuc_xac,
+        Tong,
+        Ket_qua,
         Du_doan: duDoan,
         Loai_cau: loaiCau,
-        Vi: Vi,
+        Vi,
         Do_tin_cay: `${doTinCay}%`
       };
 
@@ -147,7 +147,7 @@ app.get("/api", async (req, res) => {
 
     const soDung = history.filter(h => h.Du_doan === h.Ket_qua).length;
     const soSai = history.length - soDung;
-    const tiLeChinhXac = history.length > 0 ? ((soDung / history.length) * 100).toFixed(1) + "%" : "0%";
+    const tiLeChinhXac = history.length > 0 ? ((soDung / history.length) * 100).toFixed(2) + "%" : "0%";
 
     const output = {
       Phien: history.map(h => ({
@@ -175,6 +175,7 @@ app.get("/api", async (req, res) => {
   }
 });
 
+// Auto fetch mỗi 3s
 setInterval(async () => {
   try {
     await fetchWithRetry(SOURCE_API);
