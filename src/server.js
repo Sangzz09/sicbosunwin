@@ -1,6 +1,7 @@
 import express from "express";
 import fetch from "node-fetch";
 import cors from "cors";
+import fs from "fs";
 
 const app = express();
 app.use(cors());
@@ -8,11 +9,16 @@ app.use(cors());
 const PORT = process.env.PORT || 3000;
 const SOURCE_API = "https://sicbosun-100.onrender.com/api";
 
-// Lịch sử dự đoán
 let history = [];
 let lastPhien = null;
+let maxPatternLength = 20; // Pattern dài hạn tối đa
 
-// Lấy dữ liệu với retry + timeout chống 502
+// Lưu data.json
+function saveData() {
+  fs.writeFileSync("data.json", JSON.stringify(history, null, 2));
+}
+
+// Lấy dữ liệu với retry chống lỗi
 async function fetchWithRetry(url, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -25,20 +31,21 @@ async function fetchWithRetry(url, retries = 3) {
   }
 }
 
-// Hàm tạo trọng số ngẫu nhiên hợp lý
-function randomConfidence() {
-  return Math.floor(Math.random() * 31) + 60; // 60-90%
+// Tạo độ tin cậy ngẫu nhiên hợp lý
+function randomConfidence(min = 60, max = 90) {
+  return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Thuật toán nâng cao kết hợp nhiều phương pháp
+// Thuật toán nâng cao với ensemble + trọng số
 function advancedPredict(history) {
   const last = history[history.length - 1] || null;
   const last5 = history.slice(-5);
+  const lastPattern = history.slice(-maxPatternLength);
 
   let scoreTai = 0;
   let scoreXiu = 0;
 
-  // Thuật toán 1 – Cầu liên tục (weight 0.3)
+  // 1. Cầu liên tục (weight 0.3)
   if (last5.length >= 3) {
     const last3 = last5.slice(-3);
     const countTai = last3.filter(h => h.Ket_qua === "Tài").length;
@@ -47,26 +54,33 @@ function advancedPredict(history) {
     if (countXiu >= 2) scoreXiu += 0.3;
   }
 
-  // Thuật toán 2 – Cầu đảo (weight 0.2)
+  // 2. Cầu đảo (weight 0.2)
   if (last) {
     if (last.Ket_qua === "Tài") scoreXiu += 0.2;
     else scoreTai += 0.2;
   }
 
-  // Thuật toán 3 – Tổng xúc xắc (weight 0.3)
+  // 3. Tổng xúc xắc (weight 0.3)
   if (last) {
     if (last.Tong >= 11) scoreTai += 0.3;
     else scoreXiu += 0.3;
   }
 
-  // Thuật toán 4 – Pattern dài hạn (weight 0.2)
-  const totalTai = history.filter(h => h.Ket_qua === "Tài").length;
-  const totalXiu = history.filter(h => h.Ket_qua === "Xỉu").length;
-  const total = history.length || 1;
+  // 4. Pattern dài hạn (weight 0.2)
+  const totalTai = lastPattern.filter(h => h.Ket_qua === "Tài").length;
+  const totalXiu = lastPattern.filter(h => h.Ket_qua === "Xỉu").length;
+  const total = lastPattern.length || 1;
+
   if (totalTai / total > 0.6) scoreTai += 0.2;
   if (totalXiu / total > 0.6) scoreXiu += 0.2;
 
-  // Chuẩn hóa xác suất
+  // Nếu dự đoán sai nhiều (>5 phiên), reset pattern
+  const last5Wrong = history.slice(-5).filter(h => h.Du_doan !== h.Ket_qua).length;
+  if (last5Wrong >= 5) {
+    scoreTai = 0.5;
+    scoreXiu = 0.5;
+  }
+
   const totalScore = scoreTai + scoreXiu || 1;
   const probTai = (scoreTai / totalScore) * 100;
   const probXiu = (scoreXiu / totalScore) * 100;
@@ -82,10 +96,8 @@ app.get("/api", async (req, res) => {
   try {
     const data = await fetchWithRetry(SOURCE_API);
 
-    // Nếu phiên mới, thêm dự đoán
     if (data.Phien !== lastPhien) {
       lastPhien = data.Phien;
-
       const { duDoan, doTinCay } = advancedPredict(history);
 
       const newEntry = {
@@ -94,22 +106,21 @@ app.get("/api", async (req, res) => {
         Tong: data.Tong,
         Ket_qua: data.Ket_qua,
         Du_doan: duDoan,
-        Giai_thich: "Dự đoán theo thuật toán nâng cao + trọng số kết hợp",
+        Giai_thich: `Dự đoán tổng xúc xắc (${data.Xuc_xac.join(", ")})`,
         Do_tin_cay: `${doTinCay}%`,
       };
 
       history.push(newEntry);
+      saveData();
     }
 
-    // Tính số đúng, sai, tỉ lệ
     const soDung = history.filter(h => h.Du_doan === h.Ket_qua).length;
     const soSai = history.length - soDung;
     const tiLeChinhXac = history.length > 0 ? ((soDung / history.length) * 100).toFixed(1) + "%" : "0%";
 
-    // Trả JSON đầy đủ
     const output = {
       Dev: "@minhsangdangcap",
-      Phiens: history.map(h => ({
+      Phien: history.map(h => ({
         Phien: h.Phien,
         Xuc_xac: h.Xuc_xac,
         Tong: h.Tong,
@@ -122,23 +133,20 @@ app.get("/api", async (req, res) => {
       So_dung: soDung,
       So_sai: soSai,
       Ti_le_chinh_xac: tiLeChinhXac,
-      Cap_nhat_cach_3s: "API tự động cập nhật khi có phiên mới",
     };
 
     res.json(output);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Không thể lấy dữ liệu từ nguồn hoặc lỗi server." });
+    res.status(500).json({ error: "Lỗi server hoặc không lấy được dữ liệu." });
   }
 });
 
-// Auto fetch mỗi 3s để không bỏ sót phiên
+// Auto fetch mỗi 3s
 setInterval(async () => {
   try {
     await fetchWithRetry(SOURCE_API);
-  } catch (err) {
-    console.log("Fetch auto thất bại, bỏ qua.");
-  }
+  } catch {}
 }, 3000);
 
-app.listen(PORT, () => console.log(`Server chạy trên cổng ${PORT}`));
+app.listen(PORT, () => console.log(`Server chạy cổng ${PORT}`));
