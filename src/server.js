@@ -11,13 +11,23 @@ const SOURCE_API = "https://sicbosun-100.onrender.com/api";
 
 let history = [];
 let lastPhien = null;
+const MAX_PATTERN = 20;
+const RESET_THRESHOLD = 5;
 
-// Lưu data.json
+// Load data.json nếu có
+if (fs.existsSync("data.json")) {
+  try {
+    history = JSON.parse(fs.readFileSync("data.json"));
+    if (history.length > 0) lastPhien = history[history.length - 1].Phien;
+  } catch {
+    history = [];
+  }
+}
+
 function saveData() {
   fs.writeFileSync("data.json", JSON.stringify(history, null, 2));
 }
 
-// Lấy dữ liệu với retry chống lỗi
 async function fetchWithRetry(url, retries = 3) {
   for (let i = 0; i < retries; i++) {
     try {
@@ -30,18 +40,43 @@ async function fetchWithRetry(url, retries = 3) {
   }
 }
 
-// Tạo độ tin cậy hợp lý
-function randomConfidence(min = 60, max = 90) {
-  return Math.floor(Math.random() * (max - min + 1)) + min;
+// Xác định loại cầu
+function detectCau(history) {
+  const last5 = history.slice(-5);
+  const last3 = history.slice(-3);
+  if (last3.length === 3 && last3.every(h => h.Ket_qua === last3[0].Ket_qua)) return "Liên tục";
+  if (last5.length === 5 && last5.every((h, i, arr) => i === 0 || h.Ket_qua !== arr[i - 1].Ket_qua)) return "Đảo liên tục";
+  return "Sunwin";
 }
 
-// Thuật toán nâng cao: dựa trên **5 phiên gần nhất**
-function advancedPredict(history) {
-  const last5 = history.slice(-5); // 5 phiên gần nhất
+// Dự đoán Vi VIP dựa trên lịch sử 10–20 phiên
+function predictViVIP(history, duDoan) {
+  const lastTotals = history.slice(-20).map(h => h.Tong);
+  const freq = {};
+  lastTotals.forEach(t => freq[t] = (freq[t] || 0) + 1);
+
+  // Sắp xếp theo tần suất xuất hiện
+  let sortedTotals = Object.keys(freq).map(Number).sort((a,b) => freq[b]-freq[a]);
+
+  // Nếu không đủ, thêm giá trị ngẫu nhiên trong khoảng Tài/Xỉu
+  while (sortedTotals.length < 3) {
+    const val = duDoan === "Tài"
+      ? Math.floor(Math.random()*(18-11+1))+11
+      : Math.floor(Math.random()*(10-3+1))+3;
+    if (!sortedTotals.includes(val)) sortedTotals.push(val);
+  }
+
+  // Lấy 3 giá trị dự đoán Vi gần nhất
+  return sortedTotals.slice(0,3);
+}
+
+// Thuật toán dự đoán nâng cao VIP
+function advancedPredictVIP(history) {
+  const lastPattern = history.slice(-MAX_PATTERN);
+  const last5 = history.slice(-5);
   let scoreTai = 0;
   let scoreXiu = 0;
 
-  // 1. Cầu liên tục (weight 0.3)
   if (last5.length >= 3) {
     const last3 = last5.slice(-3);
     const countTai = last3.filter(h => h.Ket_qua === "Tài").length;
@@ -50,31 +85,26 @@ function advancedPredict(history) {
     if (countXiu >= 2) scoreXiu += 0.3;
   }
 
-  // 2. Cầu đảo (weight 0.2)
   if (last5.length >= 1) {
     const lastPhien = last5[last5.length - 1];
     if (lastPhien.Ket_qua === "Tài") scoreXiu += 0.2;
     else scoreTai += 0.2;
   }
 
-  // 3. Tổng xúc xắc (weight 0.3)
   if (last5.length >= 1) {
     const lastPhien = last5[last5.length - 1];
     if (lastPhien.Tong >= 11) scoreTai += 0.3;
     else scoreXiu += 0.3;
   }
 
-  // 4. Pattern dài hạn 5 phiên (weight 0.2)
-  const totalTai = last5.filter(h => h.Ket_qua === "Tài").length;
-  const totalXiu = last5.filter(h => h.Ket_qua === "Xỉu").length;
-  const total = last5.length || 1;
-
+  const totalTai = lastPattern.filter(h => h.Ket_qua === "Tài").length;
+  const totalXiu = lastPattern.filter(h => h.Ket_qua === "Xỉu").length;
+  const total = lastPattern.length || 1;
   if (totalTai / total > 0.6) scoreTai += 0.2;
   if (totalXiu / total > 0.6) scoreXiu += 0.2;
 
-  // Nếu 5 phiên gần nhất sai hết, reset cân bằng
-  const wrong5 = last5.filter(h => h.Du_doan && h.Du_doan !== h.Ket_qua).length;
-  if (wrong5 >= 5) {
+  const lastWrong = last5.filter(h => h.Du_doan && h.Du_doan !== h.Ket_qua).length;
+  if (lastWrong >= RESET_THRESHOLD) {
     scoreTai = 0.5;
     scoreXiu = 0.5;
   }
@@ -85,8 +115,10 @@ function advancedPredict(history) {
 
   const duDoan = probTai > probXiu ? "Tài" : "Xỉu";
   const doTinCay = Math.max(probTai, probXiu).toFixed(0);
+  const loaiCau = detectCau(history);
+  const Vi = predictViVIP(history, duDoan);
 
-  return { duDoan, doTinCay };
+  return { duDoan, doTinCay, loaiCau, Vi };
 }
 
 // API chính
@@ -94,11 +126,9 @@ app.get("/api", async (req, res) => {
   try {
     const data = await fetchWithRetry(SOURCE_API);
 
-    // Nếu phiên mới, thêm dự đoán
     if (data.Phien !== lastPhien) {
       lastPhien = data.Phien;
-
-      const { duDoan, doTinCay } = advancedPredict(history);
+      const { duDoan, doTinCay, loaiCau, Vi } = advancedPredictVIP(history);
 
       const newEntry = {
         Phien: data.Phien,
@@ -106,8 +136,9 @@ app.get("/api", async (req, res) => {
         Tong: data.Tong,
         Ket_qua: data.Ket_qua,
         Du_doan: duDoan,
-        Giai_thich: `Dự đoán tổng xúc xắc (${data.Xuc_xac.join(", ")})`,
-        Do_tin_cay: `${doTinCay}%`,
+        Loai_cau: loaiCau,
+        Vi: Vi,
+        Do_tin_cay: `${doTinCay}%`
       };
 
       history.push(newEntry);
@@ -125,8 +156,9 @@ app.get("/api", async (req, res) => {
         Tong: h.Tong,
         Ket_qua: h.Ket_qua,
         Du_doan: h.Du_doan,
-        Giai_thich: h.Giai_thich,
-        Do_tin_cay: h.Do_tin_cay,
+        Loai_cau: h.Loai_cau,
+        Vi: h.Vi,
+        Do_tin_cay: h.Do_tin_cay
       })),
       Tong_so_phien: history.length,
       So_dung: soDung,
@@ -136,13 +168,13 @@ app.get("/api", async (req, res) => {
     };
 
     res.json(output);
+
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Lỗi server hoặc không lấy được dữ liệu." });
   }
 });
 
-// Auto fetch mỗi 3s
 setInterval(async () => {
   try {
     await fetchWithRetry(SOURCE_API);
