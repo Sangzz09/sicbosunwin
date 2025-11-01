@@ -1,15 +1,15 @@
 {
-  "name": "sunwin-api-vip",
+  "name": "sicbo-sunwin-predictor-v12-nokey",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node server.js"
+    "start": "node index.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
-    "axios": "^1.6.0",
-    "cors": "^2.8.5",
-    "fs-extra": "^11.1.1"
+    "axios": "^1.7.2",
+    "express": "^4.19.2",
+    "fs-extra": "^11.2.0",
+    "ws": "^8.18.0"
   }
 }
